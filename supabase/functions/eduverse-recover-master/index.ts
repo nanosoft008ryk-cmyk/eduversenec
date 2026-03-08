@@ -41,53 +41,49 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // ---- Step 1: Try to create user ----
-    const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
-      email: newEmail,
-      password: newPassword,
-      email_confirm: true,
-      user_metadata: { created_via: "master_recovery" },
+    // ---- Step 1: Find existing user or create new one ----
+    // First, search for existing user via Admin API REST endpoint directly
+    let userId: string | null = null;
+    let existed = false;
+
+    // Use the REST API directly to list users filtered by email
+    const listRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=50`, {
+      headers: {
+        "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+        "apikey": SERVICE_ROLE_KEY,
+      },
     });
 
-    let userId: string;
-
-    if (createErr) {
-      // User already exists — find them by querying auth.users via service role
-      // Use listUsers with per_page to search through users
-      let found: any = null;
-      let page = 1;
-      while (!found && page <= 10) {
-        const { data: pageData, error: listErr } = await admin.auth.admin.listUsers({
-          page,
-          perPage: 100,
-        });
-        if (listErr || !pageData?.users?.length) break;
-        found = pageData.users.find(
-          (u: any) => u.email?.toLowerCase() === newEmail,
-        );
-        if (pageData.users.length < 100) break;
-        page++;
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const users = listData?.users ?? listData ?? [];
+      if (Array.isArray(users)) {
+        const found = users.find((u: any) => u.email?.toLowerCase() === newEmail);
+        if (found) {
+          userId = found.id;
+          existed = true;
+        }
       }
+    }
 
-      if (!found) {
-        return json({
-          error: "User exists but could not be located. Original: " + createErr.message,
-          traceId,
-        }, 400);
-      }
-
-      userId = found.id;
-
-      // Update password
+    if (userId && existed) {
+      // Update existing user's password
       const { error: updErr } = await admin.auth.admin.updateUserById(userId, {
         password: newPassword,
         email_confirm: true,
-        user_metadata: { ...(found.user_metadata ?? {}), recovered_via: "master_recovery" },
+        user_metadata: { recovered_via: "master_recovery" },
       });
       if (updErr) return json({ error: "Password update failed: " + updErr.message, traceId }, 500);
     } else {
-      if (!newUser?.user?.id)
-        return json({ error: "User creation returned no ID", traceId }, 400);
+      // Create new user
+      const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
+        email: newEmail,
+        password: newPassword,
+        email_confirm: true,
+        user_metadata: { created_via: "master_recovery" },
+      });
+      if (createErr) return json({ error: createErr.message, traceId }, 400);
+      if (!newUser?.user?.id) return json({ error: "User creation returned no ID", traceId }, 400);
       userId = newUser.user.id;
     }
 
