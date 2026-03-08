@@ -81,7 +81,7 @@ serve(async (req) => {
     // ---------- ensure profile ----------
     const { error: profErr } = await admin
       .from("profiles")
-      .upsert({ user_id: userId, display_name: "Master Admin" }, { onConflict: "user_id" });
+      .upsert({ id: userId, display_name: "Master Admin" }, { onConflict: "id" });
     if (profErr) return json({ error: profErr.message, traceId }, 500);
 
     // ---------- audit ----------
