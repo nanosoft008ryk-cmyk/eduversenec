@@ -1,4 +1,4 @@
-// eduverse-recover-master v3 – search-first approach
+// eduverse-recover-master v4 – email optional, password-only recovery
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
@@ -26,15 +26,13 @@ serve(async (req) => {
   try {
     const body = await req.json();
     const recoverySecret = body.recoverySecret as string | undefined;
-    const newEmail = (body.newEmail as string | undefined)?.trim().toLowerCase();
+    const optionalEmail = (body.newEmail as string | undefined)?.trim().toLowerCase();
     const newPassword = body.newPassword as string | undefined;
 
     if (!RECOVERY_SECRET)
       return json({ error: "Recovery secret not configured in backend", traceId }, 500);
     if (recoverySecret !== RECOVERY_SECRET)
       return json({ error: "Invalid recovery secret", traceId }, 403);
-    if (!newEmail || !newEmail.includes("@"))
-      return json({ error: "Valid email required", traceId }, 400);
     if (!newPassword || newPassword.length < 8)
       return json({ error: "Password must be at least 8 characters", traceId }, 400);
 
@@ -42,51 +40,105 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // ---- Step 1: Find existing user or create new one ----
-    // First, search for existing user via Admin API REST endpoint directly
+    // ---- Step 1: Find existing super admin(s) or use provided email ----
     let userId: string | null = null;
+    let userEmail: string | null = optionalEmail || null;
     let existed = false;
 
-    // Use the REST API directly to list users filtered by email
-    const listRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=50`, {
-      headers: {
-        "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-        "apikey": SERVICE_ROLE_KEY,
-      },
-    });
+    if (optionalEmail) {
+      // Search for user by provided email via REST API
+      const listRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=100`, {
+        headers: {
+          "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+          "apikey": SERVICE_ROLE_KEY,
+        },
+      });
 
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      const users = listData?.users ?? listData ?? [];
-      if (Array.isArray(users)) {
-        const found = users.find((u: any) => u.email?.toLowerCase() === newEmail);
-        if (found) {
-          userId = found.id;
-          existed = true;
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const users = listData?.users ?? listData ?? [];
+        if (Array.isArray(users)) {
+          const found = users.find((u: any) => u.email?.toLowerCase() === optionalEmail);
+          if (found) {
+            userId = found.id;
+            userEmail = found.email;
+            existed = true;
+          }
+        }
+      }
+    } else {
+      // No email provided — find the first existing platform super admin
+      const { data: superAdmins } = await admin
+        .from("platform_super_admins")
+        .select("user_id")
+        .limit(1);
+
+      if (superAdmins && superAdmins.length > 0) {
+        userId = superAdmins[0].user_id;
+        existed = true;
+
+        // Get the email for this user
+        const userRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+          headers: {
+            "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+            "apikey": SERVICE_ROLE_KEY,
+          },
+        });
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          userEmail = userData?.email ?? null;
         }
       }
     }
 
     if (userId && existed) {
       // Update existing user's password
-      const { error: updErr } = await admin.auth.admin.updateUserById(userId, {
-        password: newPassword,
-        email_confirm: true,
-        user_metadata: { recovered_via: "master_recovery" },
+      const updateRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+          "apikey": SERVICE_ROLE_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          password: newPassword,
+          email_confirm: true,
+          user_metadata: { recovered_via: "master_recovery" },
+        }),
       });
-      if (updErr) return json({ error: "Password update failed: " + updErr.message, traceId }, 500);
+
+      if (!updateRes.ok) {
+        const errData = await updateRes.json().catch(() => ({}));
+        return json({ error: "Password update failed: " + (errData?.msg || errData?.message || updateRes.statusText), traceId }, 500);
+      }
+    } else if (optionalEmail) {
+      // Create new user with provided email
+      const createRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+          "apikey": SERVICE_ROLE_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: optionalEmail,
+          password: newPassword,
+          email_confirm: true,
+          user_metadata: { created_via: "master_recovery" },
+        }),
+      });
+
+      const createData = await createRes.json().catch(() => ({}));
+      if (!createRes.ok) {
+        return json({ error: createData?.msg || createData?.message || "User creation failed", traceId }, 400);
+      }
+      userId = createData?.id ?? null;
+      userEmail = optionalEmail;
     } else {
-      // Create new user
-      const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
-        email: newEmail,
-        password: newPassword,
-        email_confirm: true,
-        user_metadata: { created_via: "master_recovery" },
-      });
-      if (createErr) return json({ error: createErr.message, traceId }, 400);
-      if (!newUser?.user?.id) return json({ error: "User creation returned no ID", traceId }, 400);
-      userId = newUser.user.id;
+      return json({ error: "No existing super admin found. Please provide an email to create one.", traceId }, 400);
     }
+
+    if (!userId) return json({ error: "Could not determine user ID", traceId }, 500);
 
     // ---- Step 2: Ensure super-admin row ----
     const { error: psaErr } = await admin
@@ -107,16 +159,16 @@ serve(async (req) => {
       entity_id: userId,
       actor_user_id: null,
       school_id: null,
-      metadata: { newEmail, recoveredVia: "recovery_secret", traceId },
+      metadata: { email: userEmail, recoveredVia: "recovery_secret", traceId },
     });
 
     return json({
       success: true,
-      email: newEmail,
+      email: userEmail,
       existed,
       message: existed
-        ? "Master admin password updated. Sign in at /auth"
-        : "Master admin created. Sign in at /auth",
+        ? `Password updated for ${userEmail}. Sign in at /auth`
+        : `Master admin created with ${userEmail}. Sign in at /auth`,
       traceId,
     });
   } catch (err) {

@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-const emailSchema = z.string().email();
 const passwordSchema = z.string().min(8);
 
 export default function PlatformRecoverMaster() {
@@ -26,17 +25,20 @@ export default function PlatformRecoverMaster() {
     setSuccess(false);
 
     if (!recoverySecret.trim()) return setMessage("Recovery secret required.");
-    const parsedEmail = emailSchema.safeParse(newEmail.trim());
     const parsedPassword = passwordSchema.safeParse(newPassword);
-    if (!parsedEmail.success) return setMessage("Valid email required.");
     if (!parsedPassword.success) return setMessage("Password must be at least 8 characters.");
+
+    // Email is optional — validate only if provided
+    if (newEmail.trim() && !newEmail.includes("@")) {
+      return setMessage("Please enter a valid email or leave it empty.");
+    }
 
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("eduverse-recover-master", {
         body: {
           recoverySecret: recoverySecret.trim(),
-          newEmail: parsedEmail.data.toLowerCase(),
+          newEmail: newEmail.trim() || undefined,
           newPassword: parsedPassword.data,
         },
       });
@@ -57,7 +59,7 @@ export default function PlatformRecoverMaster() {
       const resp = data as any;
       if (resp?.success) {
         setSuccess(true);
-        setMessage(`Success! Master admin created with email: ${resp.email}. Redirecting to login…`);
+        setMessage(`Success! ${resp.message} Redirecting to login…`);
         setTimeout(() => navigate("/auth"), 2500);
       } else {
         setMessage(resp?.error ?? "Recovery failed.");
@@ -85,9 +87,9 @@ export default function PlatformRecoverMaster() {
 
           <CardContent className="space-y-4">
             <div className="rounded-2xl bg-accent p-3 text-sm text-accent-foreground">
-              <p className="font-medium">One-time recovery</p>
+              <p className="font-medium">Password recovery</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Enter your recovery secret + new credentials. This will create a fresh Platform Super Admin.
+                Enter your recovery secret + new password. Email is optional — leave it empty to reset password for the existing master admin.
               </p>
             </div>
 
@@ -106,7 +108,7 @@ export default function PlatformRecoverMaster() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">New master admin email</label>
+              <label className="text-sm font-medium">Email <span className="text-muted-foreground">(optional — only if creating new admin)</span></label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -114,7 +116,7 @@ export default function PlatformRecoverMaster() {
                   type="email"
                   value={newEmail}
                   onChange={(e) => setNewEmail(e.target.value)}
-                  placeholder="admin@yourdomain.com"
+                  placeholder="Leave empty to reset existing admin"
                 />
               </div>
             </div>
