@@ -1,5 +1,6 @@
+// eduverse-recover-master v3 – search-first approach
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
 const RECOVERY_SECRET = Deno.env.get("EDUVERSE_MASTER_ADMIN_RECOVERY_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
