@@ -112,8 +112,8 @@ serve(async (req) => {
     return json({
       success: true,
       email: newEmail,
-      existed: !!createErr,
-      message: createErr
+      existed,
+      message: existed
         ? "Master admin password updated. Sign in at /auth"
         : "Master admin created. Sign in at /auth",
       traceId,
