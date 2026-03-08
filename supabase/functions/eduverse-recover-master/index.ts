@@ -53,7 +53,9 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Create the new master admin user
+    // Try to create the user; if already exists, update instead
+    let userId: string;
+
     const { data: newUser, error: createErr } = await supabaseAdmin.auth.admin.createUser({
       email: newEmail.toLowerCase(),
       password: newPassword,
@@ -61,14 +63,44 @@ serve(async (req) => {
       user_metadata: { created_via: "master_recovery" },
     });
 
-    if (createErr || !newUser?.user?.id) {
-      return new Response(
-        JSON.stringify({ error: createErr?.message ?? "User creation failed", traceId }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    if (createErr) {
+      // User already exists — look them up and update password
+      const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
+      const existing = listData?.users?.find(
+        (u) => u.email?.toLowerCase() === newEmail.toLowerCase()
       );
-    }
 
-    const userId = newUser.user.id;
+      if (!existing) {
+        return new Response(
+          JSON.stringify({ error: "User not found and could not be created: " + createErr.message, traceId }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      userId = existing.id;
+
+      // Update password & confirm email
+      const { error: updateErr } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+        password: newPassword,
+        email_confirm: true,
+        user_metadata: { ...(existing.user_metadata ?? {}), recovered_via: "master_recovery" },
+      });
+
+      if (updateErr) {
+        return new Response(
+          JSON.stringify({ error: updateErr.message, traceId }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    } else {
+      if (!newUser?.user?.id) {
+        return new Response(
+          JSON.stringify({ error: "User creation failed", traceId }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      userId = newUser.user.id;
+    }
 
     // Upsert platform_super_admins
     const { error: psaErr } = await supabaseAdmin
