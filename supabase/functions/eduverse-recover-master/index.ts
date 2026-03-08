@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const RECOVERY_SECRET = Deno.env.get("EDUVERSE_MASTER_ADMIN_RECOVERY_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -41,50 +41,69 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // ---------- find or create user ----------
+    // ---- Step 1: Try to create user ----
+    const { data: newUser, error: createErr } = await admin.auth.admin.createUser({
+      email: newEmail,
+      password: newPassword,
+      email_confirm: true,
+      user_metadata: { created_via: "master_recovery" },
+    });
+
     let userId: string;
 
-    // First check if user already exists
-    const { data: listData } = await admin.auth.admin.listUsers();
-    const existing = listData?.users?.find(
-      (u: any) => u.email?.toLowerCase() === newEmail,
-    );
+    if (createErr) {
+      // User already exists — find them by querying auth.users via service role
+      // Use listUsers with per_page to search through users
+      let found: any = null;
+      let page = 1;
+      while (!found && page <= 10) {
+        const { data: pageData, error: listErr } = await admin.auth.admin.listUsers({
+          page,
+          perPage: 100,
+        });
+        if (listErr || !pageData?.users?.length) break;
+        found = pageData.users.find(
+          (u: any) => u.email?.toLowerCase() === newEmail,
+        );
+        if (pageData.users.length < 100) break;
+        page++;
+      }
 
-    if (existing) {
-      // User exists — just reset their password
-      userId = existing.id;
+      if (!found) {
+        return json({
+          error: "User exists but could not be located. Original: " + createErr.message,
+          traceId,
+        }, 400);
+      }
+
+      userId = found.id;
+
+      // Update password
       const { error: updErr } = await admin.auth.admin.updateUserById(userId, {
         password: newPassword,
         email_confirm: true,
-        user_metadata: { ...(existing.user_metadata ?? {}), recovered_via: "master_recovery" },
+        user_metadata: { ...(found.user_metadata ?? {}), recovered_via: "master_recovery" },
       });
-      if (updErr) return json({ error: updErr.message, traceId }, 500);
+      if (updErr) return json({ error: "Password update failed: " + updErr.message, traceId }, 500);
     } else {
-      // User does not exist — create fresh
-      const { data: nu, error: crErr } = await admin.auth.admin.createUser({
-        email: newEmail,
-        password: newPassword,
-        email_confirm: true,
-        user_metadata: { created_via: "master_recovery" },
-      });
-      if (crErr || !nu?.user?.id)
-        return json({ error: crErr?.message ?? "User creation failed", traceId }, 400);
-      userId = nu.user.id;
+      if (!newUser?.user?.id)
+        return json({ error: "User creation returned no ID", traceId }, 400);
+      userId = newUser.user.id;
     }
 
-    // ---------- ensure super-admin row ----------
+    // ---- Step 2: Ensure super-admin row ----
     const { error: psaErr } = await admin
       .from("platform_super_admins")
       .upsert({ user_id: userId }, { onConflict: "user_id" });
-    if (psaErr) return json({ error: psaErr.message, traceId }, 500);
+    if (psaErr) return json({ error: "Super admin upsert: " + psaErr.message, traceId }, 500);
 
-    // ---------- ensure profile ----------
+    // ---- Step 3: Ensure profile ----
     const { error: profErr } = await admin
       .from("profiles")
       .upsert({ id: userId, display_name: "Master Admin" }, { onConflict: "id" });
-    if (profErr) return json({ error: profErr.message, traceId }, 500);
+    if (profErr) return json({ error: "Profile upsert: " + profErr.message, traceId }, 500);
 
-    // ---------- audit ----------
+    // ---- Step 4: Audit ----
     await admin.from("audit_logs").insert({
       action: "master_admin_recovery",
       entity_type: "auth_user",
@@ -97,7 +116,10 @@ serve(async (req) => {
     return json({
       success: true,
       email: newEmail,
-      message: "Master admin recovered. You can now sign in at /auth",
+      existed: !!createErr,
+      message: createErr
+        ? "Master admin password updated. Sign in at /auth"
+        : "Master admin created. Sign in at /auth",
       traceId,
     });
   } catch (err) {
