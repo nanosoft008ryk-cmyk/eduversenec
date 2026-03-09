@@ -1,189 +1,86 @@
 
 
-# Parent Panel Implementation Plan
+# Root Cause: Empty Database
 
-## Overview
-Create a read-only parent portal at `/{school}/parent` that allows parents/guardians to view their children's data, receive notifications, and communicate with teachers. The parent role already exists in the `EDUVERSE_ROLES` array.
+The connected Supabase project (`spvlyhhbhrgbigwwbzhn`) has **zero tables**. The `types.ts` file defines ~60+ tables, views, and functions that the app expects, but none exist in the database. This is why:
 
----
+- Creating staff via master admin fails (no `schools`, `profiles`, `user_roles`, `school_memberships`, `platform_super_admins` tables)
+- Creating a principal when creating a school fails (same reason)
+- Principal/admin/HR adding staff fails (no tables to write to)
+- Master admin password recovery fails (no `platform_super_admins`, `profiles`, `audit_logs` tables)
 
-## Current State Analysis
+## Plan
 
-### Existing Infrastructure
-- **`student_guardians` table**: Links parents to students with `user_id` (optional, for account access), `student_id`, `full_name`, `relationship`, `phone`, `email`, `is_primary`, `is_emergency_contact`
-- **`parent_messages` table**: Existing messaging system between teachers and parents with `sender_user_id`, `recipient_user_id`, `student_id`, `subject`, `content`, `is_read`
-- **`parent` role**: Already defined in `eduverse-roles.ts`
-- **Teacher messaging module**: `TeacherMessagesModule.tsx` already sends messages to parents with linked user accounts
+### Step 1: Create the entire database schema via migration
 
-### What Needs to Be Created
-1. **Parent Dashboard route and shell**
-2. **Helper function** to find children linked to parent's user account
-3. **RLS policies** for parent read access to child data
-4. **Notifications table** for attendance alerts and school notices
-5. **Consent forms table** (optional, for digital consent workflows)
-6. **Parent-specific modules** for viewing child data
+Write a single large migration that creates all required tables, extracted from `types.ts` (which reflects the schema from the previous Supabase project). This includes:
 
----
+**Core tables** (required for auth/staff flows):
+- `schools`, `school_branding`, `school_bootstrap`
+- `profiles` (PK: `id` referencing `auth.users`)
+- `platform_super_admins`
+- `school_memberships`
+- `user_roles`
+- `audit_logs`
 
-## Technical Implementation
+**Academic tables:**
+- `academic_classes`, `class_sections`, `class_section_subjects`, `subjects`
+- `academic_assessments`, `student_grades`
+- `students`, `parent_student_links`
 
-### Phase 1: Database Schema & Security
+**Attendance:**
+- `attendance_sessions`, `attendance_entries`
 
-**New SQL Helper Functions:**
-```text
-my_children(_school_id uuid) RETURNS SETOF uuid
-  - Returns student IDs where current user is linked via student_guardians.user_id
-  
-is_my_child(_school_id uuid, _student_id uuid) RETURNS boolean
-  - Validates if given student belongs to logged-in parent
-```
+**Finance:**
+- `fee_plans`, `fee_plan_installments`
+- `finance_invoices`, `finance_invoice_items`, `finance_payments`, `finance_payment_methods`, `finance_expenses`
 
-**New Tables:**
-```text
-parent_notifications
-  - id, school_id, student_id, parent_user_id
-  - title, content, notification_type (attendance_alert, fee_reminder, general)
-  - is_read, read_at, created_at
+**Messaging:**
+- `admin_messages`, `admin_message_recipients`, `admin_message_pins`, `admin_message_reactions`
+- `workspace_messages`
 
-consent_forms (optional, for future)
-  - id, school_id, student_id, title, description
-  - status (pending, signed, declined), signed_by, signed_at
-```
+**AI tables:**
+- `ai_academic_predictions`, `ai_career_suggestions`, `ai_counseling_queue`, `ai_early_warnings`, `ai_parent_updates`, `ai_school_reputation`, `ai_student_profiles`, `ai_teacher_performance`
 
-**RLS Policy Updates:**
-- Add parent read access to: `attendance_entries`, `student_marks`, `timetable_entries`, `finance_invoices`, `student_certificates`, `assignments`, `homework`
-- Pattern: `EXISTS (SELECT 1 FROM student_guardians WHERE user_id = auth.uid() AND student_id = <table>.student_id)`
+**Other modules:**
+- `assignments`, `assignment_submissions`
+- `behavior_notes`, `app_notifications`
+- `campuses`
+- `crm_leads`, `crm_activities`, `crm_call_logs`, `crm_campaigns`, `crm_follow_ups`, `crm_lead_attributions`, `crm_lead_sources`, `crm_pipelines`, `crm_stages`
+- `hr_contracts`, `hr_leave_requests`, `hr_performance_reviews`, `staff_salary_info`
+- `lesson_plans`, `homework`
+- `school_diary_entries`, `school_exams`, `exam_papers`, `school_holidays`, `school_notices`, `fee_slips`
+- `scheduled_messages`
+- `student_certificates`
+- `support_tickets`, `support_ticket_messages`
+- `timetable_periods`, `timetable_slots`, `timetable_versions`
 
-### Phase 2: Frontend Routing & Shell
+**Database functions:**
+- `has_role`, `is_school_member`, `is_platform_admin`, `can_manage_finance`, `can_manage_staff`, `can_manage_students`, `can_work_crm`
+- `get_school_public_by_slug`, `get_school_user_directory`, `list_school_user_profiles`
+- `my_student_id`, `my_children`, `is_my_child`
+- `get_at_risk_students`
 
-**Files to Create:**
-```text
-src/components/tenant/ParentShell.tsx
-  - Navigation sidebar with links to: Home, Attendance, Grades, Fees, Messages, Timetable, Support
-  
-src/pages/tenant/ParentDashboard.tsx
-  - Role authorization check for 'parent' role
-  - Child selector (if parent has multiple children)
-  - Routes to child modules
+**View:**
+- `school_user_directory` (view joining memberships + profiles + auth.users)
 
-src/hooks/useMyChildren.ts
-  - Hook to fetch children linked to current user via RPC
-```
+### Step 2: Enable RLS and create policies on all tables
 
-**TenantAuth.tsx Update:**
-- Add `parent` role to `roleToPathSegment()` mapping
+Every table gets RLS enabled with policies scoped by `school_id` using the `has_role` and `is_school_member` security-definer functions.
 
-**App.tsx Update:**
-- Add route: `<Route path="/:schoolSlug/parent/*" element={<ParentDashboard />} />`
+### Step 3: Redeploy edge functions
 
-### Phase 3: Parent Modules (Read-Only)
+After the schema exists, redeploy the edge functions so they work against the new database:
+- `eduverse-recover-master`
+- `eduverse-admin-create-school`
+- `eduverse-admin-create-user`
+- `eduverse-bulk-staff-import`
+- All other edge functions
 
-**Module Files:**
-```text
-src/pages/tenant/parent-modules/
-├── ParentHomeModule.tsx      # Dashboard with child cards, quick stats
-├── ParentAttendanceModule.tsx # View attendance + alerts
-├── ParentGradesModule.tsx     # View grades and assessments
-├── ParentFeesModule.tsx       # View invoices and payment status
-├── ParentMessagesModule.tsx   # Read/send messages to teachers
-├── ParentTimetableModule.tsx  # View child's timetable
-├── ParentNotificationsModule.tsx # View all notifications
-└── ParentSupportModule.tsx    # Chat support (reuse support_conversations)
-```
+### Technical Notes
 
-### Phase 4: Realtime & Notifications
-
-**Enable Realtime for:**
-- `parent_notifications` table
-- `parent_messages` table (already exists)
-
-**Notification Triggers (Future Enhancement):**
-- Auto-create notification when attendance is marked absent/late
-- Auto-create notification when new invoice is issued
-- Auto-create notification when new message is received
-
----
-
-## Data Flow
-
-```text
-Parent Login
-    │
-    ▼
-useMyChildren(schoolId)
-    │ RPC: my_children(_school_id)
-    ▼
-Returns: [{ student_id, first_name, last_name, class_section }]
-    │
-    ▼
-Child Selector (if multiple) → Selected Child ID
-    │
-    ▼
-Modules fetch child-specific data with RLS:
-  - attendance_entries (student_id = selected)
-  - student_marks (student_id = selected)
-  - finance_invoices (student_id = selected)
-  - etc.
-```
-
----
-
-## Security Model
-
-| Resource | Parent Access | Restriction |
-|----------|--------------|-------------|
-| Attendance | Read own children | Via `my_children()` check |
-| Grades/Marks | Read own children | Via `my_children()` check |
-| Fee Invoices | Read own children | Via `my_children()` check |
-| Timetable | Read own children | Via enrollment → section check |
-| Certificates | Read own children | Via `my_children()` check |
-| Messages | Read/Write | Only with teachers of own children |
-| Notifications | Read own | Via `parent_user_id = auth.uid()` |
-| Students | Read own children only | Cannot modify any student data |
-| Academic Data | None | Cannot access grades of other students |
-| Finance | None | Cannot access school financials |
-| Staff/Users | None | Cannot view staff directory |
-
----
-
-## File Changes Summary
-
-### New Files (14)
-- `src/components/tenant/ParentShell.tsx`
-- `src/pages/tenant/ParentDashboard.tsx`
-- `src/hooks/useMyChildren.ts`
-- `src/pages/tenant/parent-modules/ParentHomeModule.tsx`
-- `src/pages/tenant/parent-modules/ParentAttendanceModule.tsx`
-- `src/pages/tenant/parent-modules/ParentGradesModule.tsx`
-- `src/pages/tenant/parent-modules/ParentFeesModule.tsx`
-- `src/pages/tenant/parent-modules/ParentMessagesModule.tsx`
-- `src/pages/tenant/parent-modules/ParentTimetableModule.tsx`
-- `src/pages/tenant/parent-modules/ParentNotificationsModule.tsx`
-- `src/pages/tenant/parent-modules/ParentSupportModule.tsx`
-- Supabase migration (helper functions, tables, RLS policies)
-
-### Modified Files (2)
-- `src/App.tsx` - Add parent route
-- `src/pages/tenant/TenantAuth.tsx` - Add parent path segment mapping
-
----
-
-## Implementation Order
-
-1. **Database migration** - Helper functions `my_children()`, `is_my_child()`, notifications table, RLS policies
-2. **Hook** - `useMyChildren.ts`
-3. **Shell** - `ParentShell.tsx` with navigation
-4. **Dashboard** - `ParentDashboard.tsx` with routing and authorization
-5. **Modules** - All 8 parent modules (read-only views)
-6. **Routing** - Update `App.tsx` and `TenantAuth.tsx`
-7. **Realtime** - Enable for notifications
-
----
-
-## Note on Staff-Side Support Module
-
-The second part of your request (adding staff-side Support module to TenantDashboard) was already completed in the previous implementation. The `SupportModule` is now:
-- Available at `/{school}/{role}/support`
-- Visible to `principal`, `vice_principal`, `super_admin`, `school_owner`, and `hr_manager` roles
-- Uses the shared `SupportInbox` component with student-friendly labels
+- The migration will be large (~1500+ lines of SQL) but is a single atomic operation
+- All foreign keys, indexes, and constraints will be created to match what `types.ts` expects
+- The `school_user_directory` is a VIEW (not a table), joining `school_memberships`, `profiles`, and `auth.users`
+- `profiles.id` is the PK (maps to `auth.users.id`), not `user_id`
 
