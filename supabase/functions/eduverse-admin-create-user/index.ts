@@ -108,11 +108,11 @@ serve(async (req) => {
     }
     if (!userId) return json({ ok: false, error: "Failed to create user" }, 500, traceId);
 
-    // Profile
+    // Profile (PK is `id` which maps to auth.users.id)
     if (body.displayName?.trim()) {
       const { error: profErr } = await admin
         .from("profiles")
-        .upsert({ user_id: userId, display_name: body.displayName.trim() }, { onConflict: "user_id" });
+        .upsert({ id: userId, display_name: body.displayName.trim() }, { onConflict: "id" });
       if (profErr) return json({ ok: false, error: profErr.message }, 400, traceId);
     }
 

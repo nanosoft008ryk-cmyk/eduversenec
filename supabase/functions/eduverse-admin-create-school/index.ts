@@ -106,8 +106,8 @@ serve(async (req) => {
     const displayName = body.principalDisplayName?.trim() || "Principal";
 
     await admin.from("profiles").upsert(
-      { user_id: principalUserId, display_name: displayName },
-      { onConflict: "user_id" },
+      { id: principalUserId, display_name: displayName },
+      { onConflict: "id" },
     );
 
     const { error: memErr } = await admin
