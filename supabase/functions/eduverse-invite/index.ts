@@ -83,15 +83,16 @@ serve(async (req) => {
     const isPlatformSuperAdmin = !!(psaRows && psaRows.length > 0);
 
     if (!isPlatformSuperAdmin) {
+      // Allow: super_admin, school_owner, principal, vice_principal, hr_manager, school_admin, academic_coordinator
       const { data: roleRow, error: roleCheckErr } = await admin
         .from("user_roles")
         .select("role")
         .eq("school_id", school.id)
         .eq("user_id", actorUserId)
-        .in("role", ["super_admin", "school_owner", "principal", "vice_principal"])
+        .in("role", ["super_admin", "school_owner", "principal", "vice_principal", "hr_manager", "school_admin", "academic_coordinator"])
         .limit(1);
       if (roleCheckErr) return json({ ok: false, error: roleCheckErr.message }, 400, traceId);
-      if (!roleRow || roleRow.length === 0) return json({ ok: false, error: "Forbidden" }, 403, traceId);
+      if (!roleRow || roleRow.length === 0) return json({ ok: false, error: "Forbidden: You need staff management privileges to create users." }, 403, traceId);
     }
 
     const inviteEmail = body.email.trim().toLowerCase();

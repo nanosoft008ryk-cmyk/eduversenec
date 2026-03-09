@@ -101,10 +101,10 @@ serve(async (req) => {
     const { error: psaErr } = await admin.from("platform_super_admins").upsert({ user_id: userId }, { onConflict: "user_id" });
     if (psaErr) return json({ ok: false, error: psaErr.message }, 400, traceId);
 
-    // 3) Profile
+    // 3) Profile (PK is `id` which maps to auth.users.id)
     const { error: profileErr } = await admin
       .from("profiles")
-      .upsert({ user_id: userId, display_name: body.displayName ?? "Super Admin" }, { onConflict: "user_id" });
+      .upsert({ id: userId, display_name: body.displayName ?? "Super Admin" }, { onConflict: "id" });
     if (profileErr) return json({ ok: false, error: profileErr.message }, 400, traceId);
 
     // Directory (for UI visibility)
