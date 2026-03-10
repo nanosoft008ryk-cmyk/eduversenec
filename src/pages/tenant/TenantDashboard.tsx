@@ -168,7 +168,7 @@ const TenantDashboard = () => {
         .from("finance_payments")
         .select("amount")
         .eq("school_id", schoolId!)
-        .gte("paid_at", monthStart.toISOString())
+        .gte("payment_date", monthStart.toISOString().split("T")[0])
         .limit(1000);
       if (error) throw error;
       return (data || []).reduce((sum, p) => sum + Number(p.amount ?? 0), 0);
