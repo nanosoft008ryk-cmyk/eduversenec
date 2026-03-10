@@ -50,3 +50,9 @@ verify_jwt = false
 
 [functions.ai-parent-update-generator]
 verify_jwt = false
+
+[functions.eduverse-seed-demo-data]
+verify_jwt = false
+
+[functions.eduverse-admin-manage-school]
+verify_jwt = false
